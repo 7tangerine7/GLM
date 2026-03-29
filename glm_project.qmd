@@ -1,0 +1,1859 @@
+---
+title: "Linear Models Project in R"
+subtitle: "M1–MIDO, 2025–2026"
+author:
+  - name: "Polina Ptukha, Maga Grafe"
+    affiliation: "PSL Dauphine"
+date: last-modified
+lang: en
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: body
+    toc-title: "Contents"
+    number-sections: true
+    smooth-scroll: true
+    page-layout: full
+    linestretch: 1.2
+    fontsize: 125%
+    self-contained: true
+    df-print: default
+    code-fold: false
+    code-tools: false
+    code-line-numbers: false
+    code-overflow: scroll
+    code-copy: true
+    highlight-style: github
+    theme: cosmo
+    code-block-bg: "#F5F5F5" # Choose here https://www.w3schools.com/colors/colors_shades.asp
+    html-math-method: mathjax
+    fig-format: retina
+    fig-width: 13
+    fig-height: 7
+    fig-align: center
+    fig-pos: "H"
+    fig-cap-location: bottom
+    mainfont: "Source Sans Pro" # "Source Sans Pro" "Arial"  "Calibri"  "Cambria"  "Times New Roman"  "Georgia",  your favorite
+execute:
+  echo: false
+  warning: false
+  message: false
+  error: false
+  cache: false
+  freeze: false
+editor:
+  markdown:
+    wrap: 110
+    canonical: true
+knitr:
+  opts_chunk:
+    tidy: styler
+    comment: ''
+    dev: svg # ou png
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+set.seed(42)
+
+
+options(pillar.width = 130, width = 200, scipen = 999, digits = 5)
+
+
+library(broom)
+library(performance)
+library(parameters)
+library(car)
+library(lmtest)
+library(GGally)
+library(ggpubr)
+library(datawizard)
+
+library(see)
+library(effectsize)
+library(insight)
+library(correlation)
+library(modelbased)
+library(glue)
+library(scales)
+library(rstatix)
+library(matrixTests)
+library(ggfortify)
+library(qqplotr)
+library(collapse)
+library(tidyverse) 
+```
+
+Note: some results (output) in our qmd file slightly different from html output, we do not know why. However
+the difference is insignificant.
+
+# Introduction
+
+We analyse a data set on student exam performance. The response variable is exam score, and we have 15
+predictors, both quantitative and categorical, for 5000 observations. Our goal is to build a multiple linear
+regression model that is both interpretable and predictive.
+
+Based on an initial look at the data, we expect some obvious associations. In particular, students who study
+more hours tend to obtain higher scores. However, we hypothesize diminishing returns. Also the range of weekly
+study hours appears surprising (the maximum value seems low), so the relationship observed in this dataset may
+differ from what we would expect in a real-world setting.
+
+We also plan to examine sleep variables (sleep hours and sleep quality), since insufficient sleep may reduce
+concentration and analytical performance which is associated with lower exam scores.
+
+Finally, we expect some predictors, such as sexe and extracurricular activities, to have a small impact on
+exam score but we should confirm it with further test.
+
+# Overview
+
+Modeling Strategy Train-Test Split: To properly evaluate predictive performance, we randomly split the data
+into training and test sets using set.seed(42) for reproducibility. All models were fitted exclusively on the
+training data. The test set was reserved only for final evaluation to assess out-of-sample performance.
+
+We started with Model 1 which contained core predictors defined earlier. After we build Model 2 with remaining
+predictors which are meaningful. We remove `extra_act` to obtain a smaller model 2a. After that we build
+Models 3a-3d by adding interaction terms.
+
+Selection Approach: We compared candidate models using multiple criteria:
+
+Criterion 1:
+
+Nested F-tests (using anova()) to test whether additional terms significantly improved fit. Eventually Type II
+Anova tests to assess individual term contributions
+
+Criterion 2: AIC and BIC. Lower values indicate better models.
+
+Criterion 3: Adjusted R\^2 (Explanatory Power)
+
+Criterion 4: Test Set Performance (Practical Prediction)
+
+Calculated RMSE, MAE, and R\^2 on the held-out test set We distinguished between statistical significance
+(p-values, F-tests) and practical significance (actual prediction improvement)
+
+Criterion 5: Parsimony and Interpretability
+
+When test performance was practically equivalent, we preferred simpler models. Simpler models are easier to
+interpret and less prone to overfitting
+
+Criterion 6: Diagnostics
+
+Examined residual plots to verify assumptions
+
+Final Decision: We selected Model 3b as our final model because:
+
+All terms were both statistically significant and practically meaningful. Test set performance was practically
+equivalent to more complex alternatives. It included only two theoretically motivated, interpretable
+interactions about sleep. It balanced predictive performance with parsimony.
+
+# Data Management
+
+Data Loading
+
+We load the data set and take a first look at values, type of variables and dimensions.
+
+```{r}
+data_raw <- read_csv("project.csv", show_col_types = FALSE)
+head(data_raw, 10)
+glimpse(data_raw)
+```
+
+The data set contains information on 5,000 students with the following variables:
+
+Outcome Variable:
+
+-   `y`: Exam score (continuous, 0-100)
+
+Quantitative Predictors:
+
+-   `age`: Student age (years)
+-   `study_hrs`: Weekly study hours
+-   `sleep_hrs`: Average nightly sleep hours
+-   `attend_pct`: Class attendance percentage
+
+Categorical Predictors:
+
+-   `sexe`: Sex (Female, Male, Other)
+-   `school_type`: Public vs Private school
+-   `parent_educ`: Parental education level (6 categories: No formal, High school, Graduate, Postgrad 1,
+    Postgrad 2, PhD)
+-   `sleep_qual`: Sleep quality (Poor, Average, Good)
+-   `web_access`: Internet access at home (Yes/No)
+-   `trav_time`: Commute time (4 categories)
+-   `extra_act`: Participation in extracurricular activities (Yes/No)
+-   `study_method`: Study methods (6 types)
+
+Factor Encoding Strategy
+
+Here we convert categorical variables into properly labelled factors.
+
+Reference Categories:
+
+-   Sexe: Female
+-   School type: Public (more common)
+-   Parental education: "No formal" to see changes with improvement
+-   Sleep quality: "Poor" to see changes with improvement
+-   Web access: No
+-   Extracurricular activities:No
+-   All factors treated as unordered to avoid assuming equal step size between cathegories
+
+```{r}
+c_cols <- c("agecat","sexe","school_type","parent_educ",
+              "sleep_qual","attend_pct_cat","web_access",
+              "trav_time","extra_act","study_method")
+
+data_raw[c_cols] <- lapply(data_raw[c_cols], factor)
+
+factor_vars <- names(data_raw)[sapply(data_raw, is.factor)]
+
+#relabelled
+
+data_clean <- data_raw |>
+  mutate(
+    sexe = factor(sexe, 
+                  levels = c(1, 2, 3),
+                  labels = c("Female", "Male", "Other")),
+    
+    school_type = factor(school_type,
+                         levels = c(1, 2),
+                         labels = c("Public", "Private")),
+    
+    parent_educ = factor(parent_educ,
+                         levels = 1:6,
+                         labels = c("No formal", "High school", "Graduate",
+                                    "Postgrad 1", "Postgrad 2", "PhD")),
+    
+    sleep_qual = factor(sleep_qual,
+                        levels = c(1, 2, 3),
+                        labels = c("Poor", "Average", "Good"),
+                        ordered = FALSE),
+    
+    attend_pct_cat = factor(attend_pct_cat,
+                            levels = c(1, 2, 3, 4),
+                            labels = c("[50,62[", "[62,72[", "[72,81[", "[81,100]"),
+                            ordered = FALSE),
+    
+    web_access = factor(web_access,
+                        levels = c(1, 2),
+                        labels = c("No", "Yes")),
+    
+    trav_time = factor(trav_time,
+                       levels = c(1, 2, 3, 4),
+                       labels = c("<15 min", "15-30 min", "30-60 min", ">60 min"),
+                       ordered = FALSE),
+    
+    extra_act = factor(extra_act,
+                       levels = c(1, 2),
+                       labels = c("No", "Yes")),
+    
+    study_method = factor(study_method,
+                          levels = 1:6,
+                          labels = c("Online videos", "Coaching", "Notes",
+                                     "Textbook", "Group study", "Mixed")),
+    
+    agecat = factor(agecat,
+                    levels = 1:5,
+                    labels = c("[14.0,15.1[", "[15.1,16.1[", "[16.1,17.1[",
+                               "[17.1,18.1[", "[18.1,19.0]"),
+                    ordered = FALSE)
+  )
+
+data_clean<-data_clean |>
+  relabel(
+    id = "Student ID",
+    y = "Exam score",
+    age = "Age (years)",
+    agecat = "Age category",
+    sexe = "Sex",
+    school_type = "School type",
+    parent_educ = "Parental education",
+    study_hrs = "Weekly study hours",
+    sleep_hrs = "Sleep hours per night",
+    sleep_qual = "Sleep quality",
+    attend_pct = "Attendance percentage",
+    attend_pct_cat = "Attendance category",
+    web_access = "Internet access",
+    trav_time = "Commute time",
+    extra_act = "Extracurricular activities",
+    study_method = "Study method"
+  )
+
+glimpse(data_clean)
+
+labels <- sapply(data_clean, function(x) attr(x, "label", exact = TRUE))
+
+labels_df <- data.frame(
+  variable = names(labels),
+  label    = unname(labels),
+  row.names = NULL
+)
+
+labels_df <- subset(labels_df, !is.na(label) & label != "")
+
+knitr::kable(labels_df)
+
+```
+
+Data Integrity Checks
+
+```{r data-integrity}
+#| label: data-integrity
+
+# Duplicates
+sum(duplicated(data_clean$id))
+
+# Missing values
+colSums(is.na(data_clean))
+
+# Plausible ranges
+data_clean|>
+  select(where(is.numeric))|>
+  summary()
+```
+
+Conclusion: No missing values, no duplicate IDs. All values within plausible ranges.
+
+Handling Redundant Variables
+
+We have both continuous and categorized versions of age and attendance. We keep continuous version because:
+
+1.  Helps to keep all information
+2.  Doesn't depend on choice of categories
+3.  Keeps the model simple
+
+```{r remove-redundant}
+#| label: remove-redundant
+
+# Remove categorized versions
+data_clean <- data_clean|>
+  select(-agecat, -attend_pct_cat)
+```
+
+# Exploratory Data Analysis
+
+## Descriptive Statistics
+
+Quantitative Variables
+
+```{r}
+#| label: descriptive-quant
+data_clean|>
+  select(y, age, study_hrs, sleep_hrs, attend_pct)|>
+  describe_distribution()|>
+  knitr::kable(digits = 2, caption = "Descriptive Statistics for Quantitative Variables")
+```
+
+Categorical Variables Frequency tables
+
+```{r}
+#| label: descriptive-cat
+
+freq_summary <- bind_rows(
+  freq_table(data_clean$sexe)        |> mutate(Variable = "Sex"),
+  freq_table(data_clean$school_type) |> mutate(Variable = "School Type"),
+  freq_table(data_clean$parent_educ) |> mutate(Variable = "Parental Education"),
+  freq_table(data_clean$sleep_qual)  |> mutate(Variable = "Sleep Quality"),
+  freq_table(data_clean$web_access)  |> mutate(Variable = "Internet Access"),
+  freq_table(data_clean$study_method)|> mutate(Variable = "Study Method")
+) |>
+  rename(Value = group, pct = prop) |>
+  select(Variable, Value, n, pct)
+
+freq_summary |>
+  knitr::kable(
+    digits = 1,
+    caption = "Frequency Distributions for Categorical Variables",
+    col.names = c("Variable", "Value", "n", "%")
+  )
+
+```
+
+Distribution of y
+
+```{r}
+#| label: outcome-distribution
+
+ggplot(data_clean, aes(x = y)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, 
+                 fill = "dodgerblue", color = "black", alpha = 0.7) +
+  geom_density(alpha = 0.3, fill = "red", linewidth = 1) +
+  labs(x = "Exam Score", y = "Density", 
+       title = "Distribution of Exam Scores") +
+  theme_bw(base_size = 14)
+```
+
+```{r outcome-boxplot}
+#| label: outcome-boxplot
+
+ggplot(data_clean, aes(y = y)) +
+  geom_boxplot(fill = "lightblue", color = "black", linewidth = 0.5) +
+  labs(y = "Exam Score", title = "Boxplot of Exam Scores") +
+  theme_bw(base_size = 14)
+```
+
+Key Observations:
+
+Distribution is symmetric (skewness is low). There are some potentional outliers (points on the edges on the
+box plot)
+
+Exam Score vs Quantitative Predictors
+
+```{r scatter-continuous}
+#| label: scatter-continuous
+
+
+p1 <- ggplot(data_clean, aes(x = attend_pct, y = y)) +
+  geom_point(alpha = 0.15, size = 2, shape = 21, fill = "dodgerblue", color = "black") +
+  geom_smooth(method = "loess", color = "red", se = TRUE, linewidth = 1) +
+  geom_smooth(method = "lm", color = "blue", linetype = 2, se = FALSE, linewidth = 1) +
+  labs(x = "Attendance Percentage", y = "Exam Score") +
+  theme_bw(base_size = 12)
+
+p2 <- ggplot(data_clean, aes(x = study_hrs, y = y)) +
+  geom_point(alpha = 0.15, size = 2, shape = 21, fill = "dodgerblue", color = "black") +
+  geom_smooth(method = "loess", color = "red", se = TRUE, linewidth = 1) +
+  geom_smooth(method = "lm", color = "blue", linetype = 2, se = FALSE, linewidth = 1) +
+  labs(x = "Weekly Study Hours", y = "Exam Score") +
+  theme_bw(base_size = 12)
+
+p3 <- ggplot(data_clean, aes(x = sleep_hrs, y = y)) +
+  geom_point(alpha = 0.15, size = 2, shape = 21, fill = "dodgerblue", color = "black") +
+  geom_smooth(method = "loess", color = "red", se = TRUE, linewidth = 1) +
+  geom_smooth(method = "lm", color = "blue", linetype = 2, se = FALSE, linewidth = 1) +
+  labs(x = "Sleep Hours", y = "Exam Score") +
+  theme_bw(base_size = 12)
+
+p4 <- ggplot(data_clean, aes(x = age, y = y)) +
+  geom_point(alpha = 0.15, size = 2, shape = 21, fill = "dodgerblue", color = "black") +
+  geom_smooth(method = "loess", color = "red", se = TRUE, linewidth = 1) +
+  geom_smooth(method = "lm", color = "blue", linetype = 2, se = FALSE, linewidth = 1) +
+  labs(x = "Age (years)", y = "Exam Score") +
+  theme_bw(base_size = 12)
+
+ggarrange(p1, p2, p3, p4, ncol = 2, nrow = 2)
+```
+
+Key Observations:
+
+-   Red lines are close to linear fits for all predictors (we can conclude linearity).
+-   Weekly study hours shows linear relationship contrary to our hypothesis.
+-   No obvious heteroscedasticity for now (spread remains relatively constant).
+-   Age has a horizontal line, so it is a candidate for exclusion.
+
+Exam Score vs Categorical Predictors
+
+```{r boxplots-categorical}
+#| label: boxplots-categorical
+
+p5 <- ggplot(data_clean, aes(x = parent_educ, y = y)) +
+  geom_boxplot(fill = "lightgreen", color = "black") +
+  labs(x = "Parental Education", y = "Exam Score") +
+  theme_bw(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p6 <- ggplot(data_clean, aes(x = sleep_qual, y = y)) +
+  geom_boxplot(fill = "lightyellow", color = "black") +
+  labs(x = "Sleep Quality", y = "Exam Score") +
+  theme_bw(base_size = 10)
+
+p7 <- ggplot(data_clean, aes(x = web_access, y = y)) +
+  geom_boxplot(fill = "lightpink", color = "black") +
+  labs(x = "Internet Access", y = "Exam Score") +
+  theme_bw(base_size = 10)
+
+p8 <- ggplot(data_clean, aes(x = school_type, y = y)) +
+  geom_boxplot(fill = "lightcyan", color = "black") +
+  labs(x = "School Type", y = "Exam Score") +
+  theme_bw(base_size = 10)
+
+p9 <- ggplot(data_clean, aes(x = trav_time, y = y)) +
+  geom_boxplot(fill = "peachpuff", color = "black") +
+  labs(x = "Travel Time", y = "Exam Score") +
+  theme_bw(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p10 <- ggplot(data_clean, aes(x = extra_act, y = y)) +
+  geom_boxplot(fill = "lavender", color = "black") +
+  labs(x = "Extracurricular Activities", y = "Exam Score") +
+  theme_bw(base_size = 10)
+
+
+p12 <- ggplot(data_clean, aes(x = sexe, y = y)) +
+  geom_boxplot(fill = "lightyellow", color = "black") +
+  labs(x = "Sexe", y = "Exam Score") +
+  theme_bw(base_size = 10)
+
+ggarrange(p5, p6, p7, p8, p9, p10,  p12, ncol = 2)
+```
+
+Conclusions:
+
+We can see that Sex does not have big difference among categories thus it is a candidate for exclusion.
+
+Monotone Trends in Ordinal Predictors
+
+```{r monotone-trends}
+#| label: monotone-trends
+
+
+parent_means <- data_clean|>
+  group_by(parent_educ)|>
+  summarize(mean_y = mean(y), n = n())|>
+  mutate(level = row_number())
+
+p_parent <- ggplot(parent_means, aes(x = level, y = mean_y)) +
+  geom_point(size = 3) +
+  geom_line() +
+  scale_x_continuous(breaks = 1:6, 
+                     labels = levels(data_clean$parent_educ)) +
+  labs(x = "Parental Education Level", y = "Mean Exam Score",
+       title = "Monotone Increasing Trend") +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+sleep_means <- data_clean|>
+  group_by(sleep_qual)|>
+  summarize(mean_y = mean(y), n = n())|>
+  mutate(level = row_number())
+
+p_sleep <- ggplot(sleep_means, aes(x = level, y = mean_y)) +
+  geom_point(size = 3) +
+  geom_line() +
+  scale_x_continuous(breaks = 1:3, 
+                     labels = levels(data_clean$sleep_qual)) +
+  labs(x = "Sleep Quality", y = "Mean Exam Score",
+       title = "Monotone Increasing Trend") +
+  theme_bw(base_size = 12)
+
+
+travel_means <- data_clean|>
+  group_by(trav_time)|>
+  summarize(mean_y = mean(y), n = n())|>
+  mutate(level = row_number())
+
+p_travel <- ggplot(travel_means, aes(x = level, y = mean_y)) +
+  geom_point(size = 3) +
+  geom_line() +
+  scale_x_continuous(breaks = 1:4, 
+                     labels = levels(data_clean$trav_time)) +
+  labs(x = "Travel Time", y = "Mean Exam Score",
+       title = "Monotone Decreasing Trend") +
+  theme_bw(base_size = 12)
+
+ggarrange(p_parent, p_sleep, p_travel, ncol = 1, nrow = 3)
+```
+
+Key Observations:
+
+-   Parental education: Ordered factors show monotone increasing trend (except for parental education which
+    decreases after the first masters). It is difficult to explain as we do not know in which country data was
+    collected, so we are not sure which higher education system is used here.
+-   Sleep quality: Strong monotone increase (Poor \< Average \< Good)
+-   Travel time: Monotone decrease (longer commute associated to lower scores)
+
+Correlation Analysis
+
+```{r correlation}
+#| label: correlation
+
+# Compute correlations
+cor_matrix <- data_clean|>
+  select(y, age, study_hrs, sleep_hrs, attend_pct)|>
+  cor(method = "pearson")
+
+data_clean|>
+  select(y, age, study_hrs, sleep_hrs, attend_pct)|>
+  correlation(method = "pearson")|>
+  summary(redundant = TRUE)|>
+  plot() +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "bottom")
+
+cor_matrix[, "y"]|>
+  sort(decreasing = TRUE)|>
+  round(3)
+```
+
+Key Findings:
+
+-   attend_pct shows strongest correlation with exam scores (r = 0.74)
+-   sleep_hrs (r = 0.41) andstudy_hrs (r = 0.57) also strongly correlated
+-   age shows weakest correlation (r = -0.05).
+-   Multicollinearity check: All predictor-predictor correlations are less than 0.5 so there is no need to
+    remove variables.
+
+## Predictor Associations
+
+Chi-Square Tests for Categorical Associations
+
+```{r categorical-associations}
+#| label: categorical-associations
+
+chisq_parent_school <- chisq.test(data_clean$parent_educ, data_clean$school_type)
+chisq_sleep_extra <- chisq.test(data_clean$sleep_qual, data_clean$extra_act)
+chisq_web_school <- chisq.test(data_clean$web_access, data_clean$school_type)
+chisq_web_method <-chisq.test(data_clean$web_access, data_clean$study_method)
+
+tibble(
+  Test = c("Parent Education × School Type",
+           "Sleep Quality × Extra Activities",
+           "Internet Access × School Type",
+           "Internet Access × Study Method"),
+  `Chi-square` = c(chisq_parent_school$statistic,
+                   chisq_sleep_extra$statistic,
+                   chisq_web_school$statistic,
+                   chisq_web_method$statistic),
+  `p-value` = c(chisq_parent_school$p.value,
+                chisq_sleep_extra$p.value,
+                chisq_web_school$p.value,
+                chisq_web_method$p.value)
+)|>
+  mutate(`p-value` = format.pval(`p-value`, digits = 3, eps = 1e-16))|>
+  knitr::kable(caption = "Chi-Square Tests for Categorical Associations")
+```
+
+Interpretation: Significant associations detected (p \< 0.001), suggesting confounding that must be addressed
+through inclusion in the model.
+
+## Exploring Potential Interactions
+
+We test several interaction hypotheses:
+
+Hypothesis 1: Sleep Quality x Study Hours
+
+Rationale: Good sleep quality can improve benefits of studying through better memory consolidation and focus.
+
+```{r interaction-sleep-study}
+#| label: interaction-sleep-study
+
+ggplot(data_clean, aes(x = study_hrs, y = y, color = sleep_qual)) +
+  geom_point(alpha = 0.15, size = 1.2) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1.2) +
+  scale_color_manual(values = c("Poor" = "#D55E00", "Average" = "#0072B2", "Good" = "#009E73")) +
+  labs(x = "Study Hours", y = "Exam Score", color = "Sleep Quality",
+       title = "Interaction: Sleep Quality × Study Hours") +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "top")
+```
+
+Visual Assessment: Lines are non-parallel, with significantly steeper slopes for better sleep quality,
+suggesting an important interaction.
+
+Hypothesis 2: Sleep Hours x Sleep Quality
+
+Rationale: The benefits of sleeping more hours logically associated on sleep quality.
+
+```{r interaction-sleephrs-qual}
+#| label: interaction-sleephrs-qual
+
+ggplot(data_clean, aes(x = sleep_hrs, y = y, color = sleep_qual)) +
+  geom_point(alpha = 0.15, size = 1.2) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1.2) +
+  scale_color_manual(values = c("Poor" = "#D55E00", "Average" = "#0072B2", "Good" = "#009E73")) +
+  labs(x = "Sleep Hours", y = "Exam Score", color = "Sleep Quality",
+       title = "Interaction: Sleep Hours × Sleep Quality") +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "top")
+```
+
+Visual Assessment: Distinct slopes for each sleep quality level suggest an important effect between sleep
+quantity and quality.
+
+Hypothesis 3: Parental Education × School Type
+
+Rationale: Better parental education is associated with higher family income, so they can send their children
+to private schools
+
+```{r interaction-parent-school}
+#| label: interaction-parent-school
+
+data_clean|>
+  group_by(parent_educ, school_type)|>
+  summarize(mean_y = mean(y), .groups = "drop")|>
+  ggplot(aes(x = parent_educ, y = mean_y, color = school_type, group = school_type)) +
+  geom_point(size = 3) +
+  geom_line(linewidth = 1.2) +
+  labs(x = "Parental Education", y = "Mean Exam Score", 
+       color = "School Type",
+       title = "Potential Interaction: Parental Education × School Type") +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Visual Assessment: Lines are non parallel, though less extreme than the previous hypotheses would suggest.
+However, since logically it seems there should be an association we still will test this interaction.
+
+Additional hypotheses were tested in the R script, but in the end they had little impact on the model, so we
+do not report them here. Some tests suggested potential interactions, however the variables involved were not
+used in the final model and therefore these interactions are not showed here as well.
+
+## EDA Summary: Key Findings
+
+Finding 1: Strongest predictors are attendence (r = 0.74), study hours (r = 0.57), sleep hours (r = 0.41)
+
+Finding 2: Linearity - no transformations needed
+
+## Simple Linear Regressions
+
+(Baseline Associations)
+
+Simple regression: y \~ attend_pct
+
+Adj $R^2$ is 55%
+
+```{R simple_regressions_sum}
+
+
+
+slr_attend <- lm(y ~ attend_pct, data = data_clean)
+summary(slr_attend)
+
+```
+
+Simple regression: y \~ school_type
+
+Adj $R^2$ is 4%
+
+```{r}
+slr_school_type <- lm(y ~ school_type, data = data_clean)
+summary(slr_school_type)
+
+```
+
+Simple regression: y \~ study_hrs
+
+Adj $R^2$ is 32.5%.
+
+```{r}
+slr_study <- lm(y ~ study_hrs, data = data_clean)
+summary(slr_study)
+
+```
+
+Simple regression: y \~ sleep_hrs
+
+Adj $R^2$ is 16.8%
+
+```{r}
+slr_sleep <- lm(y ~ sleep_hrs, data = data_clean)
+summary(slr_sleep)
+
+```
+
+Simple regression: y \~ age
+
+almost doesn't explain the variability
+
+```{r}
+slr_age <- lm(y ~ age, data = data_clean)
+summary(slr_age)
+
+```
+
+Simple regression: y \~ parent_educ
+
+Adj $R^2$ is 10.2%
+
+```{r}
+slr_parent <- lm(y ~ parent_educ, data = data_clean)
+summary(slr_parent)
+
+```
+
+Simple regression: y \~ sexe
+
+Almost doesn't explain variability.
+
+```{r}
+slr_sexe <- lm(y ~ sexe, data = data_clean)
+summary(slr_sexe)
+
+```
+
+Simple regression: y \~ study_method
+
+Adj $R^2$ is 2%
+
+```{r}
+slr_study_method <- lm(y ~ study_method, data = data_clean)
+summary(slr_study_method)
+
+```
+
+Simple regression: y \~ sleep_qual
+
+Adj $R^2$ is 10.3%
+
+```{r}
+slr_sleepqual <- lm(y ~ sleep_qual, data = data_clean)
+summary(slr_sleepqual)
+
+```
+
+Simple regression: y \~ web_access
+
+Adj$R^2$ is 3.9%
+
+```{r}
+slr_web <- lm(y ~ web_access, data = data_clean)
+summary(slr_web)
+
+```
+
+Simple regression: y \~ trav_time
+
+Adj$R^2$ is 16.9%
+
+```{r}
+slr_trav <- lm(y ~ trav_time, data = data_clean)
+summary(slr_trav)
+
+```
+
+Simple regression: y \~ extra_act
+
+Adj$R^2$ is 7.37%
+
+```{r}
+slr_extra_act <- lm(y ~ extra_act, data = data_clean)
+summary(slr_extra_act)
+
+```
+
+In order to clearly view which regressors may be more important for the model and which may be redundant, we
+have made a table below.
+
+```{r simple-regressions}
+#| label: simple-regressions
+
+get_slr_stats <- function(predictor_name, data) {
+  formula_str <- paste("y ~", predictor_name)
+  model <- lm(as.formula(formula_str), data = data)
+  glance(model)|>
+    select(r.squared, adj.r.squared, AIC, BIC)
+}
+
+predictors <- c("attend_pct", "study_hrs", "sleep_hrs", "age", "parent_educ", 
+                "sexe", "sleep_qual", "web_access", "school_type", "extra_act",
+                "trav_time", "study_method")
+
+slr_results <- map_df(predictors, ~get_slr_stats(.x, data_clean)|>
+                        mutate(Predictor = .x, .before = 1))|>
+  arrange(desc(r.squared))
+
+slr_results|>
+  knitr::kable(digits = 3, 
+               caption = "Simple Linear Regression Results: R² for Each Predictor",
+               col.names = c("Predictor", "R²", "Adj R²", "AIC", "BIC"))
+```
+
+Key Findings:
+
+1.  Very Strong (adj$R^2$ \> 0.15): `attend_pct` (55%), `study_hrs` (32.5%), `sleep_hrs` (16.8%), `trav_time`
+    (16.9%).
+2.  Strong (0.05 \< adj$R^2$ \< 0.15): `parent_educ` (10.2%), `sleep_qual` (10.3%), `extra_act` (7.37%)
+3.  Moderate (0.01 \< adj$R^2$ \< 0.05): `web_access` (3.9%), `school_type` (4%), `study_method` (2.5%)
+4.  Weak: `age`, `sexe`
+
+Thus `age` and `sexe` are candidates for exclusion.
+
+# Modeling Strategy and Model Selection
+
+## Train-Test Split
+
+```{r train-test-split}
+#| label: train-test-split
+
+set.seed(42)  # For reproducibility
+
+n <- nrow(data_clean)
+train_indices <- sample(1:n, size = 0.8 * n)
+test_indices <- setdiff(1:n, train_indices)
+
+train_data <- data_clean[train_indices, ]
+test_data <- data_clean[test_indices, ]
+```
+
+We use 80-20 split (4,000 training, 1,000 test observations)
+
+## Baseline Model
+
+```{r null-model}
+#| label: null-model
+
+null_model <- lm(y ~ 1, data = train_data)
+summary(null_model) 
+```
+
+## Candidate Model 1: Core Predictors
+
+```{r model1}
+
+model1 <- lm(y ~ attend_pct + study_hrs + sleep_hrs + 
+               parent_educ + sleep_qual + trav_time,
+             data = train_data)
+
+summary(model1)
+
+glance(model1)|>
+  select(r.squared, adj.r.squared, AIC, BIC) 
+```
+
+Model 1 Calibration Plot
+
+```{r model1-calibration}
+#| label: model1-calibration
+
+pred1 <- predict(model1, newdata = test_data)
+
+ggplot(data.frame(observed = test_data$y, predicted = pred1), 
+       aes(x = predicted, y = observed)) +
+  geom_point(alpha = 0.2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", linewidth = 1) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1.1) +
+  labs(x = "Predicted", y = "Observed",
+       title = "Model 1 Calibration Check") +
+  theme_bw(base_size = 14)
+```
+
+Model 1 Conclusions:
+
+-   Adjusted $R^2$ = 0.697 (explains 69.7% of variance)
+-   Based on p-value we conclude that all predictors are significant
+-   Model is well-calibrated
+
+## Model 2
+
+Add remaining predictors with moderate effects:
+
+```{r model2}
+#| label: model2
+
+model2 <- lm(y ~ attend_pct + study_hrs + sleep_hrs + 
+               parent_educ + sleep_qual + trav_time +
+               web_access + school_type + extra_act + study_method,
+             data = train_data)
+
+summary(model2)
+
+glance(model2)|>
+  select(r.squared, adj.r.squared, AIC, BIC) 
+```
+
+Model 2 Calibration Plot
+
+```{r model2-calibration}
+#| label: model2-calibration
+
+pred2 <- predict(model2, newdata = test_data)
+
+ggplot(data.frame(observed = test_data$y, predicted = pred2), 
+       aes(x = predicted, y = observed)) +
+  geom_point(alpha = 0.2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", linewidth = 1) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1.1) +
+  labs(x = "Predicted", y = "Observed",
+       title = "Model 2 Calibration Check") +
+  theme_bw(base_size = 14)
+```
+
+Model 2 Assessment:
+
+-   Adjusted R\^2 increases to 0.7075
+-   Model is well calibrated
+-   AIC and BIC are slightly smaller then in model1
+
+Model 2 vs Model 1 Nested Models Test
+
+```{r model2-model1 comparison}
+
+anova(model1, model2)
+
+```
+
+Small p-value shows us that extended model is much better.
+
+## Model 2a
+
+We suppose that `extra_act` does not have big impact, so we test a model without it.
+
+```{r}
+
+model2a <- lm(y ~ attend_pct + study_hrs + sleep_hrs + 
+                parent_educ + sleep_qual + trav_time +
+                web_access + school_type + study_method,
+              data = train_data) 
+
+summary(model2a)
+
+glance(model2)|>
+  select(r.squared, adj.r.squared, AIC, BIC) 
+```
+
+Model2a vs Model2 Nested Model Test
+
+```{r}
+
+anova(model2, model2a)
+```
+
+Small p-value suggest that bigger model is better but it is not significantly small, so we do not consider
+this as a reason to keep the predictor `extra_act`.
+
+Model 2a Calibration Plot
+
+```{r model2a-calibration}
+#| label: model2a-calibration
+
+pred2a <- predict(model2a, newdata = test_data)
+
+ggplot(data.frame(observed = test_data$y, predicted = pred2a), 
+       aes(x = predicted, y = observed)) +
+  geom_point(alpha = 0.2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", linewidth = 1) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1.1) +
+  labs(x = "Predicted", y = "Observed",
+       title = "Model 2a Calibration Check") +
+  theme_bw(base_size = 14)
+```
+
+Model 2a Assessment:
+
+-   Adjusted R\^2 barely changed
+-   It is a smaller model so further we work with it
+-   Model is well calibrated
+
+## Model 3a: Add sleep_qual:study_hrs Interaction
+
+```{r model3a}
+#| label: model3a
+
+model3a <- lm(y ~ attend_pct + study_hrs + sleep_hrs + 
+                parent_educ + sleep_qual + trav_time +
+                web_access + school_type + study_method +
+                sleep_qual:study_hrs,
+              data = train_data)
+
+summary(model3a)
+```
+
+```{r model3a-metrics}
+
+glance(model3a)|>
+  select(r.squared, adj.r.squared, AIC, BIC)|>
+  knitr::kable(digits = 4, caption = "Model 3a Performance")
+```
+
+Test Model 3a vs Model 2a
+
+```{r test-model3a}
+#| label: test-model3a
+
+anova(model2a, model3a)
+
+```
+
+We can conclude that model3a (with interaction) is much better.
+
+```{r test-model3a-2}
+#| label: test-model3a-2
+
+Anova(model3a, type = "II")|>
+  knitr::kable(digits = 4, caption = "Type II Anova for Model 3a")
+```
+
+p-values are significantly small, so all predictors are important.
+
+Model 3a Assessment:
+
+-   Interaction `sleep_qual:study_hrs` is highly significant (F-test p \< 0.001)
+-   Adjusted R\^2 improved to 0.725
+-   AIC decreased
+-   model is well calibrated
+
+Thus interaction improves model.
+
+Model 3a Calibration Plot
+
+```{r model3a-calibration}
+
+pred3a <- predict(model3a, newdata = test_data)
+
+ggplot(data.frame(observed = test_data$y, predicted = pred3a), 
+       aes(x = predicted, y = observed)) +
+  geom_point(alpha = 0.2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", linewidth = 1) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1.1) +
+  labs(x = "Predicted", y = "Observed",
+       title = "Model 3a Calibration Check") +
+  theme_bw(base_size = 14)
+```
+
+## Model 3b: Add sleep_hrs:sleep_qual Interaction
+
+```{r model3b}
+
+model3b <- lm(y ~ attend_pct + study_hrs + sleep_hrs + 
+                parent_educ + sleep_qual + trav_time +
+                web_access + school_type + study_method +
+                sleep_qual:study_hrs + sleep_hrs:sleep_qual,
+              data = train_data)
+
+summary(model3b)
+```
+
+```{r model3b-metrics}
+#| label: model3b-metrics
+
+glance(model3b)|>
+  select(r.squared, adj.r.squared, sigma, AIC, BIC)|>
+  knitr::kable(digits = 4, caption = "Model 3b (FINAL) Performance")
+
+```
+
+Test Model 3b vs Model 3a
+
+```{r test-model3b}
+#| label: test-model3b
+
+anova(model3a, model3b)
+
+Anova(model3b, type = "II")|>
+  knitr::kable(digits = 4, caption = "Type II Anova for Model 3b")
+```
+
+Model 3b Assessment:
+
+-   Second interaction `sleep_hrs:sleep_qual` is significant (F-test p \< 0.001)
+-   Well calibrated
+
+Model 3b Calibration Plot
+
+```{r model3b-calibration}
+#| label: model3b-calibration
+
+pred3b <- predict(model3b, newdata = test_data)
+
+ggplot(data.frame(observed = test_data$y, predicted = pred3b), 
+       aes(x = predicted, y = observed)) +
+  geom_point(alpha = 0.2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", linewidth = 1) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1.1) +
+  labs(x = "Predicted", y = "Observed",
+       title = "Model 3b Calibration Check") +
+  theme_bw(base_size = 14)
+```
+
+## Model 3c: Add parent_educ:school_type Interaction
+
+```{r model3c}
+
+
+model3c <- lm(y ~ attend_pct + study_hrs + sleep_hrs + 
+                parent_educ + sleep_qual + trav_time +
+                web_access + school_type + study_method +
+                sleep_qual:study_hrs + sleep_hrs:sleep_qual + 
+                parent_educ:school_type,
+              data = train_data)
+
+summary(model3c)
+```
+
+```{r model3c-metrics}
+#| label: model3c-metrics
+
+glance(model3c)|>
+  select(r.squared, adj.r.squared, sigma, AIC, BIC)|>
+  knitr::kable(digits = 4, caption = "Model 3c Performance")
+```
+
+Test Model 3c vs Model 3b
+
+```{r test-model3c}
+#| label: test-model3c
+
+anova(model3b, model3c)
+
+```
+
+Model 3c Assessment:
+
+-   Third interaction `parent_educ:school_type` is significant (p \< 0.05)
+-   Model becomes too complex
+-   Well calibrated
+
+Model 3c Calibration Plot
+
+```{r model3c-calibration}
+#| label: model3c-calibration
+
+pred3c <- predict(model3c, newdata = test_data)
+
+ggplot(data.frame(observed = test_data$y, predicted = pred3c), 
+       aes(x = predicted, y = observed)) +
+  geom_point(alpha = 0.2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", linewidth = 1) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1.1) +
+  labs(x = "Predicted", y = "Observed",
+       title = "Model 3c Calibration Check") +
+  theme_bw(base_size = 14)
+```
+
+## Model 3d: Test web_access:study_method Interaction
+
+```{r model3d}
+#| label: model3d
+
+model3d <- lm(y ~ attend_pct + study_hrs + sleep_hrs + 
+                parent_educ + sleep_qual + trav_time +
+                web_access + school_type + study_method +
+                sleep_qual:study_hrs + sleep_hrs:sleep_qual + 
+                parent_educ:school_type + web_access:study_method,
+              data = train_data)
+
+summary(model3d)
+```
+
+```{r model3d-test}
+#| label: model3d-test
+
+anova(model3c, model3d)
+
+Anova(model3d)
+```
+
+Model 3d Assessment:
+
+-   F-test shows that web_access:study_method is significant (p \< 0.05)
+-   well calibrated
+-   Anove II type test showed that all predictors are significant
+-   Even more complex model
+
+Model 3d Calibration Plot
+
+```{r model3e-calibration}
+#| label: model3d-calibration
+
+pred3e <- predict(model3d, newdata = test_data)
+
+ggplot(data.frame(observed = test_data$y, predicted = pred3e), 
+       aes(x = predicted, y = observed)) +
+  geom_point(alpha = 0.2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", linewidth = 1) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1.1) +
+  labs(x = "Predicted", y = "Observed",
+       title = "Model 3e Calibration Check") +
+  theme_bw(base_size = 14)
+```
+
+# Model Comparison and Selection
+
+## Performance Comparison
+
+```{r model-comparison-comprehensive}
+#| label: model-comparison-comprehensive
+
+compare_performance(null_model, model1, model2, model2a, model3a, model3b, 
+                   model3c, model3d)|>
+  knitr::kable(digits = 4, caption = "Model Comparison (Performance Package)")
+```
+
+Based on performance comparison we can see that all models are much better than null_model. Significant
+increase in adjusted R\^2 we can see in models 3a and 3b. Also significant decrease in AIC and BIC for the
+same models. Interactions added after these models does not improve performance significantly but make the
+model more complex.
+
+We also repeatedly used F-test to check improvement of new models.
+
+## Test Set Performance: All Models
+
+```{r test-performance-function}
+#| label: test-performance-function
+
+metrics_test <- function(model, test_data) {
+  pred <- predict(model, newdata = test_data)
+  y <- test_data$y
+  
+  mse <- mean((y - pred)^2)
+  rmse <- sqrt(mse)
+  medae <- median(abs(y - pred))
+  r2_oos <- 1 - sum((y - pred)^2) / sum((y - mean(y))^2)
+  
+  c(MSE = mse, RMSE = rmse, MedAE = medae, R2_oos = r2_oos)
+}
+
+baseline_pred <- rep(mean(train_data$y), nrow(test_data))
+baseline_rmse <- sqrt(mean((test_data$y - baseline_pred)^2))
+```
+
+```{r test-performance-all}
+#| label: test-performance-all
+
+results <- bind_rows(
+  data.frame(Model = "Baseline (y ~ 1)", t(metrics_test(null_model, test_data))),
+  data.frame(Model = "Model 1", t(metrics_test(model1, test_data))),
+  data.frame(Model = "Model 2", t(metrics_test(model2, test_data))),
+  data.frame(Model = "Model 2a", t(metrics_test(model2a, test_data))),
+  data.frame(Model = "Model 3a", t(metrics_test(model3a, test_data))),
+  data.frame(Model = "Model 3b", t(metrics_test(model3b, test_data))),
+  data.frame(Model = "Model 3c", t(metrics_test(model3c, test_data))),
+  data.frame(Model = "Model 3d", t(metrics_test(model3d, test_data)))
+)|>
+  mutate(
+    Improvement_pct = ((baseline_rmse - RMSE) / baseline_rmse) * 100
+  ) 
+
+results|>
+  knitr::kable(digits = 3, 
+               caption = "Test Set Performance ")
+```
+
+In comparison with baseline model we can see big improvement for all new models. Models 3a and 3b have
+significantly lower RMSE in comparison with previous models. Out-of-sample R\^2 improves as well with the same
+pattern.
+
+Nested Fisher test shows following results:
+
+-   Model 1 to Model 2: Improvement
+-   Model 2 to Model 2a: Decline
+-   Model 2a to Model 3a: Improvement
+-   Model 3a to Model 3b: Improvement
+-   Model 3b to Model 3c: Improvement
+-   Model 3c to Model 3d: Improvement
+
+In conclusion, based on predictive performance, adj R\^2, AIC, BIC we do not improve significantly after the
+model 3b. However, new interactions increase chance of overfitting and makes interpretability worse. So we
+should keep model 3b as the final model.
+
+```{r final-model-designation}
+#| label: final-model-designation
+
+final_model <- model3b
+```
+
+# Diagnostics and Model Assumptions
+
+## Diagnostic Plots
+
+```{r diagnostics-auto}
+#| label: diagnostics-auto
+#| fig-cap: "Standard diagnostic plots for final model"
+#| fig-height: 8
+
+autoplot(final_model, 1:4, ncol = 2, nrow = 2)
+```
+
+Assessment:
+
+1.  Residuals vs Fitted: Random scatter, the $\epsilon_i$ are centered
+2.  Q-Q Plot: Points close to line, normality satisfied
+3.  Scale-Location: Relatively flat and close to 1, homoscedasticity OK
+4.  Residuals vs Leverage: No highly influential points (Cook's distance less than 1)
+
+```{r augmented-diagnostics}
+#| label: augmented-diagnostics
+
+aug <- augment(final_model, data = train_data)
+
+```
+
+## Residuals vs Continuous Predictors
+
+```{r residuals-continuous}
+#| label: residuals-continuous
+
+
+p_res1 <- ggplot(aug, aes(x = attend_pct, y = .resid)) +
+  geom_point(alpha = 0.15, size = 1.2) +
+  geom_smooth(method = "loess", se = TRUE, linewidth = 1.2, color = "red") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(x = "Attendance %", y = "Residuals") +
+  theme_bw(base_size = 12)
+
+p_res2 <- ggplot(aug, aes(x = study_hrs, y = .resid)) +
+  geom_point(alpha = 0.15, size = 1.2) +
+  geom_smooth(method = "loess", se = TRUE, linewidth = 1.2, color = "red") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(x = "Study Hours", y = "Residuals") +
+  theme_bw(base_size = 12)
+
+p_res3 <- ggplot(aug, aes(x = sleep_hrs, y = .resid)) +
+  geom_point(alpha = 0.15, size = 1.2) +
+  geom_smooth(method = "loess", se = TRUE, linewidth = 1.2, color = "red") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(x = "Sleep Hours", y = "Residuals") +
+  theme_bw(base_size = 12)
+
+ggarrange(p_res1, p_res2, p_res3, ncol = 1, nrow = 3)
+```
+
+Assessment: Curves are approximately flat, confirming linearity and no missed patterns.
+
+## Residuals vs Categorical Predictors
+
+```{r residuals-categorical}
+#| label: residuals-categorical
+
+p_cat1 <- ggplot(aug, aes(x = parent_educ, y = .resid)) +
+  geom_boxplot(fill = "lightblue", color = "black") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(x = "Parental Education", y = "Residuals") +
+  theme_bw(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_cat2 <- ggplot(aug, aes(x = sleep_qual, y = .resid)) +
+  geom_boxplot(fill = "lightyellow", color = "black") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(x = "Sleep Quality", y = "Residuals") +
+  theme_bw(base_size = 10)
+
+p_cat3 <- ggplot(aug, aes(x = trav_time, y = .resid)) +
+  geom_boxplot(fill = "peachpuff", color = "black") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(x = "Travel Time", y = "Residuals") +
+  theme_bw(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_cat4 <- ggplot(aug, aes(x = web_access, y = .resid)) +
+  geom_boxplot(fill = "lightpink", color = "black") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(x = "Internet Access", y = "Residuals") +
+  theme_bw(base_size = 10)
+
+ggarrange(p_cat1, p_cat2, p_cat3, p_cat4, ncol = 2, nrow = 2)
+```
+
+Assessment: Residuals centered at zero across all categories, confirming model adequately captures group
+effects.
+
+## Residuals vs Omitted Variables
+
+We check whether variables excluded from the final model show patterns in residuals.
+
+```{r residuals-omitted}
+#| label: residuals-omitted
+
+
+p_omit1 <- ggplot(train_data, aes(x = age, y = aug$.resid)) +
+  geom_point(alpha = 0.3, size = 1.5) +
+  geom_smooth(method = "loess", color = "red", se = TRUE) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(x = "Age (omitted)", y = "Residuals") +
+  theme_bw(base_size = 12)
+
+p_omit2 <- ggplot(train_data, aes(x = sexe, y = aug$.resid)) +
+  geom_boxplot(fill = "lightcoral", color = "black") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(x = "Sex (omitted)", y = "Residuals") +
+  theme_bw(base_size = 12)
+
+p_omit3 <- ggplot(train_data, aes(x = extra_act, y = aug$.resid)) +
+  geom_boxplot(fill = "lightgreen", color = "black") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(x = "Extracurricular (omitted)", y = "Residuals") +
+  theme_bw(base_size = 12)
+
+ggarrange(p_omit1, p_omit2, p_omit3, ncol = 3, nrow = 1)
+```
+
+Assessment: No systematic patterns in residuals vs omitted variables. Exclusion of age, sex, and extra_act is
+justified.
+
+# Results: Final Model Interpretation
+
+## Model Equation
+
+The final model (Model 3b) is:
+
+\$\$
+
+\begin{aligned}
+y = \beta_0
+&+ \beta_1 \text{attend\_pct}
++ \beta_2 \text{study\_hrs}
++ \beta_3 \text{sleep\_hrs} \\
+
+&+ \beta_4 \mathbb{1}_{\text{High school}}
++ \beta_5 \mathbb{1}_{\text{Graduate}}
++ \beta_6 \mathbb{1}_{\text{Postgrad 1}} \\
+
+&+ \beta_7 \mathbb{1}_{\text{Postgrad 2}}
++ \beta_8 \mathbb{1}_{\text{PhD}} \\
+
+&+ \beta_9 \mathbb{1}_{\text{Average sleep}}
++ \beta_{10} \mathbb{1}_{\text{Good sleep}} \\
+
+&+ \beta_{11} \mathbb{1}_{\text{15--30 min}}
++ \beta_{12} \mathbb{1}_{\text{30--60 min}}
++ \beta_{13} \mathbb{1}_{\text{over 60 min}} \\
+
+&+ \beta_{14} \mathbb{1}_{\text{Internet: Yes}}
++ \beta_{15} \mathbb{1}_{\text{Private}} \\
+
+&+ \beta_{16} \mathbb{1}_{\text{Coaching}}
++ \beta_{17} \mathbb{1}_{\text{Notes}}
++ \beta_{18} \mathbb{1}_{\text{Textbook}} \\
+
+&+ \beta_{19} \mathbb{1}_{\text{Group study}}
++ \beta_{20} \mathbb{1}_{\text{Mixed}} \\
+
+&+ \beta_{21}\bigl(\mathbb{1}_{\text{Average sleep}} \cdot \text{study\_hrs}\bigr)
++ \beta_{22}\bigl(\mathbb{1}_{\text{Good sleep}} \cdot \text{study\_hrs}\bigr)
++ \varepsilon .
+\end{aligned}
+
+\$\$
+
+## Complete Coefficient Table
+
+```{r final-coefficients}
+
+#| label: final-coefficients
+
+
+
+parameters::model_parameters(final_model, ci_method = "residual") |>
+  mutate(
+    p = ifelse(p < 1e-4, format(p, scientific = TRUE, digits = 3), round(p, 5))
+  ) |>
+  dplyr::select(Parameter, Coefficient, SE, CI_low, CI_high, t, p) |>
+  knitr::kable(
+    caption = "Final Model: Complete Coefficient Estimates with 95% CIs"
+  )
+```
+
+## Key Term Interpretations
+
+### Main Effects
+
+1.  Attendance (attend_pct)
+
+The coefficient for attendence is 0.45 with 95% CI \[ 0.423 0.478 \] so each 1% (since attendence is stored on
+a 0 to 100 scale) increase in attendance is associated with a 0.45 point increase in exam score. Thus a 10%
+attendance increase is associated with to a 4.5 point increase holding all other varaiables constant.
+
+2.  Study Hours (baseline effect for poor sleep quality)
+
+Baseline coefficient (poor sleep): 1.27
+
+Interpretation: For students with POOR sleep quality, each study hour is associated with a 1.27 point increase
+so for students with poor sleep quality, each additional hour of studying is associated with a +1.27 point
+increase in exam score, holding other variables constant.
+
+Note: This effect is moderated by sleep quality (see interactions)
+
+3.  Sleep Hours (baseline effect for poor sleep quality)
+
+Baseline coefficient (poor sleep quality): 4.78
+
+Interpretation: For students with POOR sleep quality, each sleep hour is associated with a 4.78 point
+increase. In other words, among students with Poor sleep quality, increasing sleep duration by 1 hour is
+associated with a +4.78 point change in the outcome (holding all other predictors fixed).
+
+Note: This effect is moderated by sleep quality (see interactions)
+
+4.  Parental Education Effects
+
+```{r interpret-parent-educ}
+#| label: interpret-parent-educ
+
+model_parameters(final_model)|>
+  filter(grepl("parent_educ", Parameter))|>
+  select(Parameter, Coefficient, CI_low, CI_high, p)|>
+  knitr::kable(digits = 2, 
+               caption = "Parental Education Effects (vs No Formal)")
+```
+
+Interpretation : Clear monotone increasing trend. Children of PhD-educated parents score approximately 0.96
+points higher than those with no formal parental education, holding all else constant. There is a monotone
+trend.
+
+5.  Internet Access: Coefficient: 1.02
+
+Interpretation: Students with home internet access score 1.02 points higher, holding all else constant
+
+6.  School Type Coefficient: 2.06
+
+Interpretation: Private school students score 2.06 points higher, holding all else constant
+
+### Interaction Effects
+
+Interaction 1: Sleep Quality × Study Hours
+
+```{r interpret-interaction1}
+#| label: interpret-interaction1
+
+base_study <- coef(final_model)["study_hrs"]
+int_average <- coef(final_model)["study_hrs:sleep_qualAverage"]
+int_good <- coef(final_model)["study_hrs:sleep_qualGood"]
+
+interaction1_table <- tibble(
+  `Sleep Quality` = c("Poor", "Average", "Good"),
+  `Effect of 1 Study Hour` = c(base_study, 
+                                base_study + int_average,
+                                base_study + int_good),
+  `Increase vs Poor` = c(0, int_average, int_good),
+  `% Increase vs Poor` = c(0, 
+                          (int_average / base_study) * 100,
+                          (int_good / base_study) * 100)
+)
+
+interaction1_table|>
+  knitr::kable(digits = 2, 
+               caption = "Marginal Effect of Study Hours by Sleep Quality")
+```
+
+Interpretation :
+
+-   For students with poor sleep quality, each additional study hour is associated with an estimated +1.28
+    point increase in exam score (baseline slope).
+
+-For students with average sleep, the marginal effect rises to +2.26 points per hour.
+
+-For students with good sleep, the marginal effect rises to +3.15 points per hour (i.e. +1.87 more than poor
+sleep).
+
+Sleep quality strongly amplifies the return to studying: the marginal return to an extra study hour is about
+141% higher for good sleepers than for poor sleepers (3.15 vs 1.28 points/hour), holding other covariates
+constant.- Students with good sleep.
+
+Interaction 2: Sleep Hours × Sleep Quality
+
+```{r interpret-interaction2}
+#| label: interpret-interaction2
+
+base_sleep <- coef(final_model)["sleep_hrs"]
+int_sleep_avg <- coef(final_model)["sleep_hrs:sleep_qualAverage"]
+int_sleep_good <- coef(final_model)["sleep_hrs:sleep_qualGood"]
+
+interaction2_table <- tibble(
+  `Sleep Quality` = c("Poor", "Average", "Good"),
+  `Effect of 1 Sleep Hour` = c(base_sleep,
+                                base_sleep + int_sleep_avg,
+                                base_sleep + int_sleep_good),
+  `Increase vs Poor` = c(0, int_sleep_avg, int_sleep_good),
+  `% Increase vs Poor` = c(0,
+                          (int_sleep_avg / base_sleep) * 100,
+                          (int_sleep_good / base_sleep) * 100)
+)
+
+interaction2_table|>
+  knitr::kable(digits = 2,
+               caption = "Marginal Effect of Sleep Hours by Sleep Quality")
+```
+
+Interpretation :
+
+-   With poor sleep quality : Each sleep hour is associated with 4.78 point increase
+-   With average sleep quality : Each sleep hour is associated with 1.94-point increase
+-   With good sleep quality : Each sleep hour is associated with 0.45 -point increase
+
+Practical implication : Sleep quantity and quality have a big effect together . The model suggests diminishing
+marginal returns to additional sleep hours as sleep quality improves—extra sleep hours matter most for poor
+sleepers and much less for good sleepers (0.45 vs 4.78 points/hour), holding all other variables constant.
+
+## Visualizing Interaction Effects
+
+```{r visualize-interactions}
+#| label: visualize-interactions
+
+pred_data_study <- expand_grid(
+  attend_pct = 75,
+  study_hrs = seq(5, 30, 0.5),
+  sleep_hrs = 7,
+  parent_educ = "Graduate",
+  sleep_qual = c("Poor", "Average", "Good"),
+  trav_time = "15-30 min",
+  web_access = "Yes",
+  school_type = "Public",
+  study_method = "Notes"
+)
+
+pred_data_study$predicted <- predict(final_model, newdata = pred_data_study)
+
+p_int1 <- ggplot(pred_data_study, aes(x = study_hrs, y = predicted, color = sleep_qual)) +
+  geom_line(linewidth = 1.5) +
+  scale_color_manual(values = c("Poor" = "#D55E00", "Average" = "#0072B2", "Good" = "#009E73")) +
+  labs(x = "Weekly Study Hours", y = "Predicted Exam Score",
+       color = "Sleep Quality",
+       title = "Sleep Quality Moderates Study Hour Effects",
+       subtitle = "Steeper slope with better sleep = higher return to studying") +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "top")
+
+pred_data_sleep <- expand_grid(
+  attend_pct = 75,
+  study_hrs = 15,
+  sleep_hrs = seq(4, 10, 0.1),
+  parent_educ = "Graduate",
+  sleep_qual = c("Poor", "Average", "Good"),
+  trav_time = "15-30 min",
+  web_access = "Yes",
+  school_type = "Public",
+  study_method = "Notes"
+)
+
+pred_data_sleep$predicted <- predict(final_model, newdata = pred_data_sleep)
+
+p_int2 <- ggplot(pred_data_sleep, aes(x = sleep_hrs, y = predicted, color = sleep_qual)) +
+  geom_line(linewidth = 1.5) +
+  scale_color_manual(values = c("Poor" = "#D55E00", "Average" = "#0072B2", "Good" = "#009E73")) +
+  labs(x = "Sleep Hours per Night", y = "Predicted Exam Score",
+       color = "Sleep Quality",
+       title = "Sleep Quality Moderates Sleep Hour Effects",
+       subtitle = "Greater benefit from more sleep when quality is high") +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "top")
+
+p_int1 
+p_int2
+```
+
+## Scenario-Based Predictions
+
+We define two contrasting student profiles to illustrate the model's predictions.
+
+### Scenario 1: High-Performing Student
+
+```{r scenario1}
+#| label: scenario1
+
+student1 <- data.frame(
+  attend_pct = 95,
+  study_hrs = 14,
+  sleep_hrs = 8,
+  parent_educ = "PhD",
+  sleep_qual = "Good",
+  trav_time = "<15 min",
+  web_access = "Yes",
+  school_type = "Private",
+  study_method = "Mixed"
+)
+
+pred1_scenario <- predict(final_model, newdata = student1, 
+                          interval = "prediction", level = 0.95)
+
+tibble(
+  Profile = "High-Performing",
+  Predicted = pred1_scenario[1],
+  Lower_95 = pred1_scenario[2],
+  Upper_95 = pred1_scenario[3]
+)|>
+  knitr::kable(digits = 1, 
+               caption = "Scenario 1: High-Performing Student Prediction")
+```
+
+Profile : 95% attendance, 14 study hours/week, 8 hours good sleep, PhD-educated parents, private school,
+internet access, minimal commute. Our model students performs on the exam with approximately 95 points.
+
+### Scenario 2: At-Risk Student
+
+```{r scenario2}
+#| label: scenario2
+
+student2 <- data.frame(
+  attend_pct = 60,
+  study_hrs = 8,
+  sleep_hrs = 5,
+  parent_educ = "No formal",
+  sleep_qual = "Poor",
+  trav_time = ">60 min",
+  web_access = "No",
+  school_type = "Public",
+  study_method = "Online videos"
+)
+
+pred2_scenario <- predict(final_model, newdata = student2, 
+                          interval = "prediction", level = 0.95)
+
+tibble(
+  Profile = "At-Risk",
+  Predicted = pred2_scenario[1],
+  Lower_95 = pred2_scenario[2],
+  Upper_95 = pred2_scenario[3]
+)|>
+  knitr::kable(digits = 1, 
+               caption = "Scenario 2: At-Risk Student Prediction")
+```
+
+Profile : 60% attendance, 8 study hours/week, 5 hours poor sleep, no formal parental education, public school,
+no internet, long commute.
+
+The students performs with approximately with result 36.2.
+
+Predicted score gap: 58.8 points
+
+This 58.8 -point gap illustrates the cumulative importance of attendance, study habits, sleep, and
+socioeconomic factors in determining academic outcomes.
+
+## Overall Model Fit Summary
+
+```{r model-fit-summary}
+#| label: model-fit-summary
+
+
+pred3b <- predict(model3b, newdata = test_data)
+rmse3b <- sqrt(mean((test_data$y - pred3b)^2, na.rm = TRUE))
+mae3b <- mean(abs(test_data$y - pred3b), na.rm = TRUE)
+r2_test3b <- 1 - sum((test_data$y - pred3b)^2) / sum((test_data$y - mean(test_data$y))^2)
+
+
+model_perf <- model_performance(final_model)
+
+tibble(
+  Metric = c("R²", "Adjusted R²", "RMSE (training)", "Sigma", "AIC", "BIC", 
+             "Test R²", "Test RMSE", "Test MedAE", "N (training)"),
+  Value = c(model_perf$R2, model_perf$R2_adjusted, model_perf$RMSE, 
+            model_perf$Sigma, model_perf$AIC, model_perf$BIC,
+            r2_test3b, rmse3b, mae3b, nrow(train_data))
+)|>
+  knitr::kable(digits = 3, caption = "Final Model Fit Statistics")
+```
+
+Summary :
+
+-   Training adj$R^2$ = 0.734: Model explains 73.4% of variance in exam scores (training data)
+-   Test R\^2 = 0.741: Good out-of-sample performance (minimal overfitting)
+-   Test RMSE = 7.616: Average prediction error of 7.621 points on held-out data
+-   Improvement over baseline : 49.16% reduction in RMSE
+
+## Limitations
+
+1.  The dataset does not include several important determinants of academic performance, such as prior grades,
+    parental income/education, health status, and learning disabilities. As a result, some estimated effects
+    may be biased due to unobserved confounding.
+
+2.  Data set is mostly self-reported.
+
+3.  Model performance was evaluated using only one held-out validation split. While this provides a reasonable
+    first assessment, results may be sensitive to the specific split. More robust validation (e.g., repeated
+    train/test splits or cross-validation) would provide stronger evidence.
+
+4.  Results are specific to high school students and may not transfer to other contexts.
+
+5.  The RMSE remains relatively large, and prediction intervals for individual students are wide (as shown in
+    the case study). This indicates that the model is not well suited for precise predictions at the
+    individual level, but it can still be useful for identifying general relationships and patterns at the
+    group level.
+
+6.  Study hours are capped at 14 hours per week in the dataset. Within this limited range, a linear
+    relationship is plausible; however, at higher study-hour levels the relationship could become nonlinear
+    (e.g., diminishing returns or even negative effects due to fatigue), which this model cannot capture.
+
+# Conclusion
+
+Our model shows good explanatory power and reasonable predictive performance on this dataset. Further
+improvements may be limited because the dataset is largely self-reported, which introduces noise, and because
+several important determinants of performance are not observed. A key strength of the model is its
+interpretability, that is, it can be clearly communicated to readers with limited statistical background. Each
+predictor, including the interaction terms, has both an intuitive interpretation and a statistically
+meaningful effect. Therefore, we consider this model an appropriate final choice for analyzing performance
+patterns in our data.
+
+# Use of Generative AI
+
+We used ChatGPT as assistance in plotting and debugging. Mostly it affected ADE. We verified all results.
+Conclusions are our own.
