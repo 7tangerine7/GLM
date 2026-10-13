@@ -1207,6 +1207,41 @@ pred2_scenario <- predict(final, newdata = student2,
                           interval = "prediction", level = 0.95)
 print(pred2_scenario)
 
+library(lmtest)
+
+r2_test <- function(fit) {
+  pred <- predict(fit, newdata = test_data)
+  1 - sum((test_data$y - pred)^2) / sum((test_data$y - mean(test_data$y))^2)
+}
+
+# 1. Are the residuals of model3b pure noise?
+res <- residuals(model3b)
+shapiro.test(res)          # normality: a large p-value means no evidence against Gaussian noise
+bptest(model3b)            # Breusch-Pagan: a large p-value means constant variance
+resettest(model3b, power = 2:3, type = "fitted")  # RESET: is there curvature left in the fitted values?
+# With n = 4000 the RESET test detects even tiny leftover curvature; step 2 checks
+# whether capturing it actually improves out-of-sample prediction.
+
+# 2. A much richer linear model: every pairwise interaction plus squared terms
+rich <- lm(y ~ (attend_pct + study_hrs + sleep_hrs + age + parent_educ + sleep_qual +
+                  trav_time + web_access + school_type + study_method + extra_act + sexe)^2 +
+             I(attend_pct^2) + I(study_hrs^2) + I(sleep_hrs^2) + I(age^2),
+           data = train_data)
+
+# 3. Noise ceiling: if the rich model contains the true signal, its residual
+#    variance estimates the irreducible noise, and no model can do better than
+#    R^2_max = 1 - sigma^2 / Var(y)
+sigma2_hat <- summary(rich)$sigma^2
+r2_ceiling <- 1 - sigma2_hat / var(test_data$y)
+
+ceiling_table <- data.frame(
+  model   = c("model3b (ours)", "rich model (all interactions + squares)", "noise ceiling"),
+  n_coef  = c(length(coef(model3b)), length(coef(rich)), NA),
+  test_R2 = round(c(r2_test(model3b), r2_test(rich), r2_ceiling), 4)
+)
+print(ceiling_table)
+cat(sprintf("model3b reaches %.1f%% of the achievable R^2\n",
+            100 * r2_test(model3b) / r2_ceiling))
 
 
 #Rest done in main QMD file. as mostly comments.
